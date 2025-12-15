@@ -42,3 +42,14 @@ try_roundtrip([])
 try_roundtrip({"nested": {"list": [1, 2, 3], "bool": True}, "empty_dict": {}, "empty_list": []})
 
 try_roundtrip(smoltlv.UnknownTLV(0x99, b"\x01\x02\x03\x04"), allow_unknown_types=True)
+
+try_roundtrip([{"known": 123, "unknown": smoltlv.UnknownTLV(0xAB, b"\x05\x06")}], allow_unknown_types=True)
+
+try_roundtrip([
+    {"level1_key1": "level1_value1",
+     "level1_key2": {
+         "level2_key1": [1, 2, 3, {"level3_key": smoltlv.UnknownTLV(0xCD, b"\x07\x08")}],
+         "level2_key2": False
+     }},
+    smoltlv.UnknownTLV(0xEF, b"\x09\x0A\x0B")
+], allow_unknown_types=True)
