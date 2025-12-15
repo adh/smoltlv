@@ -25,6 +25,10 @@
  */
 
 #include <smoltlv.h>
+#include <string.h>
+#ifndef SMOLTLV_NO_MALLOC
+#include <stdlib.h>
+#endif
 
 /*
  * Decoder functionality
@@ -93,8 +97,8 @@ void SmolTLV_Cursor_for_item(SmolTLV_Cursor *c, SmolTLV_Item item) {
 
     const uint8_t *p = item.pointer;
     uint32_t len = load_len24(p);
-    c->buffer = p;
-    c->size = 4u + (size_t)len;
+    c->buffer = p + 4;
+    c->size = len;
     c->position = 0;
 }
 
@@ -183,6 +187,7 @@ bool SmolTLV_Item_as_bytes(SmolTLV_Item item, const char **out, size_t *out_len)
     }
     return true;
 }
+#ifndef SMOLTLV_NO_MALLOC
 bool SmolTLV_Item_as_string(SmolTLV_Item item, const char **out, size_t *out_len) {
     SmolTLV_Type type = SmolTLV_Item_get_type(item);
     if (type != SMOLTLV_TYPE_STRING)
@@ -223,6 +228,7 @@ bool SmolTLV_Item_copy_value(SmolTLV_Item item, const char **out, size_t *out_le
 
     return true;
 }
+#endif
 
 bool SmolTLV_Item_strcmp(SmolTLV_Item item, const char *str) {
     if (!str) {
@@ -328,9 +334,304 @@ bool SmolTLV_Item_dict_get(SmolTLV_Item dict_item,
  * Encoder functionality
  */
 
+#ifndef SMOLTLV_NO_ENCODER
+
+typedef struct EncoderFrame_s EncoderFrame;
+struct EncoderFrame_s {
+    size_t start_position;
+    EncoderFrame *next;
+};
+
 struct SmolTLV_Encoder_s {
     uint8_t *buffer;
     size_t buffer_size;
     size_t position;
+    bool error: 1;
+    bool finalized: 1;
+    bool manage_buffer: 1;
+    EncoderFrame *frame_stack;
 };
 
+SmolTLV_Encoder* SmolTLV_Encoder_create() {
+    return SmolTLV_Encoder_create_with_size(4u);
+}
+
+SmolTLV_Encoder* SmolTLV_Encoder_create_with_size(size_t initial_size) {
+    SmolTLV_Encoder *encoder = (SmolTLV_Encoder *)malloc(sizeof(SmolTLV_Encoder));
+    if (!encoder) {
+        return NULL;
+    }
+
+    encoder->buffer = (uint8_t *)malloc(initial_size);
+    if (!encoder->buffer) {
+        free(encoder);
+        return NULL;
+    }
+
+    encoder->buffer_size = initial_size;
+    encoder->position = 0;
+    encoder->error = false;
+    encoder->finalized = false;
+    encoder->manage_buffer = true;
+    encoder->frame_stack = NULL;
+    return encoder;
+}
+
+SmolTLV_Encoder* SmolTLV_Encoder_create_from_buffer(
+    const uint8_t *buffer,
+    size_t size
+) {
+    SmolTLV_Encoder *encoder = (SmolTLV_Encoder *)malloc(sizeof(SmolTLV_Encoder));
+    if (!encoder) {
+        return NULL;
+    }
+
+    encoder->buffer = (uint8_t *)buffer;
+    encoder->buffer_size = size;
+    encoder->position = 0;
+    encoder->error = false;
+    encoder->finalized = false;
+    encoder->manage_buffer = false;
+    encoder->frame_stack = NULL;
+    return encoder;
+}
+
+void SmolTLV_Encoder_destroy(SmolTLV_Encoder *encoder) {
+    if (!encoder) {
+        return;
+    }
+
+    if (encoder->manage_buffer && encoder->buffer) {
+        free(encoder->buffer);
+    }
+
+    EncoderFrame *frame = encoder->frame_stack;
+    while (frame) {
+        EncoderFrame *next = frame->next;
+        free(frame);
+        frame = next;
+    }
+
+    free(encoder);
+}
+
+SmolTLV_Status SmolTLV_Encoder_finalize(
+    SmolTLV_Encoder *encoder,
+    const uint8_t **out_buffer,
+    size_t *out_size
+) {
+    if (!encoder){
+        return SMOLTLV_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (encoder->manage_buffer && (!out_buffer || !out_size)) {
+        return SMOLTLV_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (encoder->error) {
+        return SMOLTLV_STATUS_INVALID_STATE;
+    }
+
+    if (encoder->frame_stack != NULL) {
+        return SMOLTLV_STATUS_INVALID_STATE;
+    }
+
+    encoder->finalized = true;
+    encoder->manage_buffer = false;
+
+    *out_buffer = encoder->buffer;
+    *out_size = encoder->position;
+
+    return SMOLTLV_STATUS_OK;
+}
+
+
+static bool encoder_reserve(SmolTLV_Encoder *encoder, size_t size) {
+    if (encoder->position + size <= encoder->buffer_size) {
+        return true;
+    }
+
+    if (!encoder->manage_buffer) {
+        encoder->error = true;
+        return false;
+    }
+
+    size_t new_size = encoder->buffer_size * 2u;
+    while (new_size < encoder->position + size) {
+        new_size *= 2u;
+    }
+
+    uint8_t *new_buffer = (uint8_t *)realloc(encoder->buffer, new_size);
+    if (!new_buffer) {
+        encoder->error = true;
+        return false;
+    }
+
+    encoder->buffer = new_buffer;
+    encoder->buffer_size = new_size;
+    return true;
+}
+
+bool encoder_write_header(SmolTLV_Encoder *encoder, 
+                          SmolTLV_Type type, 
+                          uint32_t length) {
+    if (encoder->error || encoder->finalized) {
+        return false;
+    }
+
+    if (!encoder_reserve(encoder, 4u)) {
+        return false;
+    }
+
+    encoder->buffer[encoder->position + 0u] = (uint8_t)type;
+    encoder->buffer[encoder->position + 1u] = (uint8_t)((length >> 16) & 0xFFu);
+    encoder->buffer[encoder->position + 2u] = (uint8_t)((length >> 8) & 0xFFu);
+    encoder->buffer[encoder->position + 3u] = (uint8_t)(length & 0xFFu);
+    encoder->position += 4u;
+    return true;
+}
+void encoder_patch_header(SmolTLV_Encoder *encoder, 
+                          uint32_t length, 
+                          size_t header_position) {
+    if (encoder->error || encoder->finalized) {
+        return;
+    }
+
+    encoder->buffer[header_position + 1u] = (uint8_t)((length >> 16) & 0xFFu);
+    encoder->buffer[header_position + 2u] = (uint8_t)((length >> 8) & 0xFFu);
+    encoder->buffer[header_position + 3u] = (uint8_t)(length & 0xFFu);
+}
+
+SmolTLV_Status SmolTLV_Encoder_write_primitive(SmolTLV_Encoder *encoder, 
+                                               SmolTLV_Type type, 
+                                               const uint8_t *value, 
+                                               size_t length) {
+    if (encoder->error || encoder->finalized) {
+        return SMOLTLV_STATUS_INVALID_STATE;
+    }
+
+    if (length > SMOLTLV_MAX_LENGTH) {
+        return SMOLTLV_STATUS_INVALID_ARGUMENT;
+    }
+
+    // Reserve space
+    if (!encoder_reserve(encoder, 4u + (size_t)length)) {
+        return SMOLTLV_STATUS_OUT_OF_MEMORY;
+    }
+
+    // Write header
+    if (!encoder_write_header(encoder, type, length)) {
+        return SMOLTLV_STATUS_OUT_OF_MEMORY;
+    }
+
+    // Write value
+    if (length > 0u && value != NULL) {
+        memcpy(&encoder->buffer[encoder->position], value, (size_t)length);
+        encoder->position += (size_t)length;
+    }
+
+    return SMOLTLV_STATUS_OK;
+}
+
+SmolTLV_Status SmolTLV_Encoder_write_null(SmolTLV_Encoder *encoder) {
+    return SmolTLV_Encoder_write_primitive(encoder, SMOLTLV_TYPE_NULL, NULL, 0u);
+}
+SmolTLV_Status SmolTLV_Encoder_write_bool(SmolTLV_Encoder *encoder, bool value) {
+    SmolTLV_Type type = value ? SMOLTLV_TYPE_BOOL_TRUE : SMOLTLV_TYPE_BOOL_FALSE;
+    return SmolTLV_Encoder_write_primitive(encoder, type, NULL, 0u);
+}
+SmolTLV_Status SmolTLV_Encoder_write_int(SmolTLV_Encoder *encoder, int64_t value) {
+    uint8_t buf[8];
+    buf[0] = (uint8_t)((value >> 56) & 0xFFu);
+    buf[1] = (uint8_t)((value >> 48) & 0xFFu);
+    buf[2] = (uint8_t)((value >> 40) & 0xFFu);
+    buf[3] = (uint8_t)((value >> 32) & 0xFFu);
+    buf[4] = (uint8_t)((value >> 24) & 0xFFu);
+    buf[5] = (uint8_t)((value >> 16) & 0xFFu);
+    buf[6] = (uint8_t)((value >> 8) & 0xFFu);
+    buf[7] = (uint8_t)(value & 0xFFu);
+    return SmolTLV_Encoder_write_primitive(encoder, SMOLTLV_TYPE_INT, buf, 8u);
+}
+SmolTLV_Status SmolTLV_Encoder_write_bytes(SmolTLV_Encoder *encoder, 
+                                           const uint8_t *data, 
+                                           size_t length) {
+    return SmolTLV_Encoder_write_primitive(encoder, SMOLTLV_TYPE_BYTES, data, length);
+}
+SmolTLV_Status SmolTLV_Encoder_write_string(SmolTLV_Encoder *encoder, 
+                                            const char *str) {
+    if (!str) {
+        return SMOLTLV_STATUS_INVALID_ARGUMENT;
+    }
+
+    size_t length = strlen(str);
+    return SmolTLV_Encoder_write_primitive(encoder, SMOLTLV_TYPE_STRING, (const uint8_t *)str, length);
+}
+
+SmolTLV_Status SmolTLV_Encoder_start_nested(SmolTLV_Encoder *encoder, 
+                                            SmolTLV_Type container_type) {
+    if (encoder->error) {
+        return SMOLTLV_STATUS_INVALID_STATE;
+    }
+
+    if (container_type != SMOLTLV_TYPE_LIST && container_type != SMOLTLV_TYPE_DICT) {
+        return SMOLTLV_STATUS_INVALID_ARGUMENT;
+    }
+
+    // Reserve space for header
+    if (!encoder_reserve(encoder, 4u)) {
+        return SMOLTLV_STATUS_OUT_OF_MEMORY;
+    }
+
+    // Push frame onto stack
+    EncoderFrame *frame = (EncoderFrame *)malloc(sizeof(EncoderFrame));
+    if (!frame) {
+        return SMOLTLV_STATUS_OUT_OF_MEMORY;
+    }
+    frame->start_position = encoder->position;
+    frame->next = encoder->frame_stack;
+    encoder->frame_stack = frame;
+
+    // Write placeholder header
+    if (!encoder_write_header(encoder, container_type, 0u)) {
+        return SMOLTLV_STATUS_OUT_OF_MEMORY;
+    }
+
+    return SMOLTLV_STATUS_OK;
+}
+SmolTLV_Status SmolTLV_Encoder_start_list(SmolTLV_Encoder *encoder) {
+    return SmolTLV_Encoder_start_nested(encoder, SMOLTLV_TYPE_LIST);
+}
+SmolTLV_Status SmolTLV_Encoder_start_dict(SmolTLV_Encoder *encoder) {
+    return SmolTLV_Encoder_start_nested(encoder, SMOLTLV_TYPE_DICT);
+}
+SmolTLV_Status SmolTLV_Encoder_end(SmolTLV_Encoder *encoder) {
+    if (encoder->error || encoder->finalized) {
+        return SMOLTLV_STATUS_INVALID_STATE;
+    }
+    if (!encoder->frame_stack) {
+        return SMOLTLV_STATUS_INVALID_STATE;
+    }
+    // Pop frame from stack
+    EncoderFrame *frame = encoder->frame_stack;
+    encoder->frame_stack = frame->next;
+
+    // Calculate length of nested container
+    size_t container_start = frame->start_position + 4u;
+    size_t container_length = encoder->position - container_start;
+
+    if (container_length > SMOLTLV_MAX_LENGTH) {
+        free(frame);
+        encoder->error = true;
+        return SMOLTLV_STATUS_INVALID_FORMAT;
+    }
+
+
+    // Patch header with correct length
+    encoder_patch_header(encoder, (uint32_t)container_length, frame->start_position);
+
+    free(frame);
+
+    return SMOLTLV_STATUS_OK;
+}
+
+#endif /* SMOLTLV_NO_ENCODER */

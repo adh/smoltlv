@@ -35,6 +35,8 @@
 extern "C" {
 #endif
 
+#define SMOLTLV_MAX_LENGTH 0xFFFFFFu
+
 typedef enum SmolTLV_Type_e {
     SMOLTLV_TYPE_NULL       = 0x00,
     SMOLTLV_TYPE_BOOL_TRUE  = 0x01,
@@ -53,6 +55,8 @@ typedef enum SmolTLV_Status_e {
     SMOLTLV_STATUS_END,
     SMOLTLV_STATUS_NEED_MORE_DATA,
     SMOLTLV_STATUS_INVALID_FORMAT,
+    SMOLTLV_STATUS_INVALID_STATE,
+    SMOLTLV_STATUS_OUT_OF_MEMORY,
 } SmolTLV_Status;
 
 /*
@@ -103,15 +107,17 @@ extern bool SmolTLV_Item_is_null(SmolTLV_Item item);
 extern bool SmolTLV_Item_as_bool(SmolTLV_Item item, bool *out);
 extern bool SmolTLV_Item_as_int(SmolTLV_Item item, int64_t *out);
 
+extern bool SmolTLV_Item_as_bytes(SmolTLV_Item item, const char **out, 
+                                  size_t *out_len);
+
+#ifndef SMOLTLV_NO_MALLOC
 /** Accessor for string values - copies to heap, adds \0, which is not 
  * included in out_len */
 extern bool SmolTLV_Item_as_string(SmolTLV_Item item, const char **out, 
                                    size_t *out_len);
-extern bool SmolTLV_Item_as_bytes(SmolTLV_Item item, const char **out, 
-                                  size_t *out_len);
 extern bool SmolTLV_Item_copy_value(SmolTLV_Item item, const char **out, 
                                     size_t *out_len);
-
+#endif
 
 /** String comparison, works for arbitrary items, true if string and 
  * item match */
@@ -132,17 +138,45 @@ extern bool SmolTLV_Item_dict_get(SmolTLV_Item dict_item,
  * Note: Encoder does (quite a lot of) heap allocations internally.
  */
 
+#ifndef SMOLTLV_NO_ENCODER
 typedef struct SmolTLV_Encoder_s SmolTLV_Encoder;
 
 extern SmolTLV_Encoder* SmolTLV_Encoder_create(void);
-extern SmolTLV_Encoder* SmolTLV_Encoder_create_with_capacity(
-    size_t initial_capacity
+extern SmolTLV_Encoder* SmolTLV_Encoder_create_with_size(
+    size_t initial_size
 );
 extern SmolTLV_Encoder* SmolTLV_Encoder_create_from_buffer(
     const uint8_t *buffer,
     size_t size
 );
 extern void SmolTLV_Encoder_destroy(SmolTLV_Encoder *encoder);
+extern SmolTLV_Status SmolTLV_Encoder_finalize(
+    SmolTLV_Encoder *encoder,
+    const uint8_t **out_buffer,
+    size_t *out_size
+);
+
+extern SmolTLV_Status SmolTLV_Encoder_write_primitive(SmolTLV_Encoder *encoder, 
+                                                      SmolTLV_Type type, 
+                                                      const uint8_t *value, 
+                                                      size_t length);
+
+extern SmolTLV_Status SmolTLV_Encoder_write_null(SmolTLV_Encoder *encoder);
+extern SmolTLV_Status SmolTLV_Encoder_write_bool(SmolTLV_Encoder *encoder, bool value);
+extern SmolTLV_Status SmolTLV_Encoder_write_int(SmolTLV_Encoder *encoder, int64_t value);
+extern SmolTLV_Status SmolTLV_Encoder_write_bytes(SmolTLV_Encoder *encoder, 
+                                                  const uint8_t *data, 
+                                                  size_t length);
+extern SmolTLV_Status SmolTLV_Encoder_write_string(SmolTLV_Encoder *encoder, 
+                                                   const char *str);
+
+extern SmolTLV_Status SmolTLV_Encoder_start_nested(SmolTLV_Encoder *encoder, 
+                                                   SmolTLV_Type container_type);
+extern SmolTLV_Status SmolTLV_Encoder_start_list(SmolTLV_Encoder *encoder);
+extern SmolTLV_Status SmolTLV_Encoder_start_dict(SmolTLV_Encoder *encoder);
+extern SmolTLV_Status SmolTLV_Encoder_end(SmolTLV_Encoder *encoder);
+
+#endif /* SMOLTLV_NO_ENCODER */
 
 #ifdef __cplusplus
 }
