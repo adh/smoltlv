@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smoltlv"
+version = "0.1.0"
+authors = [
+    { name="Aleš Hakl", email="ales@hakl.net" }
+]
+description = "SmolTLV - Simple serialization format for JSON/CBOR-like data model for embedded devices"
+readme = "README.md"
+license = { file="LICENSE" }
+keywords = ["serialization", "embedded", "json", "cbor", "tlv"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Utilities"
+]
+dependencies = []
+
+[tool.setuptools]
+packages = [
+    "smoltlv"
+]
