@@ -25,6 +25,10 @@ class UnknownTLV:
     def __init__(self, type_id, data):
         self.type_id = type_id
         self.data = data
+    def __eq__(self, other):
+        return isinstance(other, UnknownTLV) \
+            and self.type_id == other.type_id \
+            and self.data == other.data
 
 class Decoder:
     def __init__(self, fp, allow_unknown_types=False):
@@ -91,6 +95,11 @@ class Decoder:
         
         if type_id == SMOLTLV_TYPE_STRING:  # String
             return data.decode('utf-8')
+
+        if self.allow_unknown_types:
+            return UnknownTLV(type_id, data)
+        
+        raise DecoderError(f"Unknown type ID: {type_id:02x}")
 
 class Encoder:
     def __init__(self, fp):

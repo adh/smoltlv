@@ -15,7 +15,7 @@ def hexdump(data: bytes):
     return res
 
 
-def try_roundtrip(value):
+def try_roundtrip(value, allow_unknown_types=False):
     print("Testing value:", repr(value))
 
     encoded = smoltlv.dumps(value)
@@ -23,7 +23,7 @@ def try_roundtrip(value):
     print("Encoded data:")
     print(hexdump(encoded))
 
-    decoded = smoltlv.loads(encoded)
+    decoded = smoltlv.loads(encoded, allow_unknown_types=allow_unknown_types)
     assert decoded == value, f"Roundtrip failed: {decoded} != {value}"
 
 
@@ -40,3 +40,5 @@ try_roundtrip({})
 try_roundtrip([])
 
 try_roundtrip({"nested": {"list": [1, 2, 3], "bool": True}, "empty_dict": {}, "empty_list": []})
+
+try_roundtrip(smoltlv.UnknownTLV(0x99, b"\x01\x02\x03\x04"), allow_unknown_types=True)
